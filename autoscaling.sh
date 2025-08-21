@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -x
+
 source /home/ubuntu/data/data.env
 
 path="/home/ubuntu/data/instance_id.txt"
@@ -9,13 +11,14 @@ count=1
 
 cpu=$(mpstat 1 1 | grep Average | awk '{print 100 - int($12)}')
 
+echo "$(date)"
 echo "${cpu}"
 echo "hitpoint1"
 
 
-if [ "${cpu}" -gt 65 ]; then
+if [ "${cpu}" -gt 70 ]; then
 
-        echo "hitpoint2"
+        echo "hitpoint2 $(date)"
 
         instance=$(aws ec2 run-instances \
                 --image-id $AMI \
@@ -31,29 +34,70 @@ if [ "${cpu}" -gt 65 ]; then
         echo "${instance}" >> "${path}"
         echo "${instance} is created $(date)" >> "${log}"
 
-        echo "hitpoint3"
+        echo "hitpoint3 $(date)"
 
         aws elbv2 register-targets \
                 --target-group-arn $ARN \
                 --targets Id="${instance}"
 
-        if aws elbv2 describe-target-health \
-                --target-group-arn $ARN \
-                --targets Id="${instance}" \
-                --query 'TargetHealthDescriptions[*].Target.Id' \
-                --output text | grep -q "${instance}"; then
+        count=1
+        max_try=6
 
-                echo "hitpoint a"
+        while true; do
 
-                echo "${instance} added to target group $(date)" >> "${log}"
-        fi
+                echo "hitpoint4 $(date)"
 
 
-        echo "hitpoint4"
+                health=$(aws elbv2 describe-target-health \
+                        --target-group-arn $ARN \
+                        --targets Id="${instance}" \
+                        --query 'TargetHealthDescriptions[*].TargetHealth.State' \
+                        --output text)
+                echo " $health $(date) "
+
+                if [ "$count" -gt "$max_try" ]; then
+
+                        echo "loops end here"
+
+                        echo "hitpointn"
+                        break
+
+                fi
+
+                if [ "$health" == "healthy" ]; then
+
+                        echo "The instance is healthy $(date)" >> "${log}"
+                        echo "hitpoint5"
+                        break
+
+                elif [ "$health" == "initial" ]; then
+
+                        echo "the instance is added to group $(date)" >> "${log}"
+                        echo "hitpoint6"
+                        sleep 10
+
+
+                elif [ "$health" == "unhealthy" ]; then
+
+                        echo "target is still unhealthy after ${count} times checking" >> "${log}"
+
+                        (( count++ ))
+
+                        sleep 10
+                        echo "hitpoint7"
+
+
+
+                fi
+
+
+        done
+
+        echo "hitpoint8"
 
 fi
 
-echo "hitpoint5"
+echo "hitpoint9"
 
 if [ $cpu -lt 30 ]; then
 
@@ -88,3 +132,4 @@ if [ $cpu -lt 30 ]; then
 
         echo "hitpoint8"
 fi
+
