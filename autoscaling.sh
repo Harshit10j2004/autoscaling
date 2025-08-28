@@ -21,13 +21,24 @@ exec 200>$lockfile
         path="/home/ubuntu/data/instance_id.txt"
 
         echo "script is locked $(date) " >> "${log}"
-        count=1
+
 
         cpu=$(mpstat 1 1 | grep Average | awk '{print 100 - int($12)}')
 
         if [ "${cpu}" -gt 70 ]; then
 
-                echo "CPU is gt than 80% starting the server at $(date)" >> "${log}"
+                vms=$(aws elbv2 describe-target-health \
+                        --target-group-arn $ARN \
+                        --query 'TargetHealthDescriptions[].Target.Id' \
+                        --output text | wc -w )
+                if [ "${vms}" -lt 10 ]; then
+                        count=1
+                else
+
+                        count=$(( "${vms}" / 10 ))
+                fi
+
+                echo "CPU is gt than 80% starting ${count} servers at $(date)" >> "${log}"
 
                 instance=$(aws ec2 run-instances \
                         --image-id $AMI \
@@ -35,57 +46,64 @@ exec 200>$lockfile
                         --instance-type $INSTANCE \
                         --key-name $KEY \
                         --security-group-ids $SECURITY \
-                        --query Instances[0].InstanceId \
+                        --query Instances[*].InstanceId \
                         --output text)
 
-                aws ec2 wait instance-status-ok --instance-ids "${instance}"
-
-                echo "${instance}" >> "${path}"
-                echo "${instance} instance is created at $(date)" >> "${log}"
-
-                aws elbv2 register-targets \
-                        --target-group-arn $ARN \
-                        --targets Id="${instance}"
-
-                echo " instance is connecting to the target group at $(date) " >> "${log}"
-                sleep 30
-
-                for i in {1..15}; do
-
-                        echo " Started to check the instance health before trying to add to target group at $(date) " >> "${log}"
+                for i in $instance; do
 
 
-                        health=$(aws elbv2 describe-target-health \
+                        aws ec2 wait instance-status-ok --instance-ids "${i}"
+
+                        echo "${i}" >> "${path}"
+                        echo "${i} instance is created at $(date)" >> "${log}"
+
+
+
+                        aws elbv2 register-targets \
                                 --target-group-arn $ARN \
-                                --targets Id="${instance}" \
-                                --query 'TargetHealthDescriptions[*].TargetHealth.State' \
-                                --output text)
-                        echo " current health is ${health} at $(date) " >> "${log}"
+                                --targets Id="${i}"
+
+                        echo " ${i} instance is connecting to the target group at $(date) " >> "${log}"
+                        sleep 30
+
+
+                        for j in {1..15}; do
+
+                                echo " Started to check the instance health before trying to add to target group at $(date) " >> "${log}"
+
+
+                                health=$(aws elbv2 describe-target-health \
+                                        --target-group-arn $ARN \
+                                        --targets Id="${i}" \
+                                        --query 'TargetHealthDescriptions[*].TargetHealth.State' \
+                                        --output text)
+                                echo " current health is ${health} at $(date) " >> "${log}"
 
 
 
-                        if [ "$health" == "healthy" ]; then
+                                if [ "$health" == "healthy" ]; then
 
-                                echo "The instance is now healthy $(date)" >> "${log}"
+                                        echo "The instance ${i} is now healthy $(date)" >> "${log}"
 
-                                break
+                                        break
 
-                        elif [ "$health" == "initial" ]; then
+                                elif [ "$health" == "initial" ]; then
 
-                                echo "the instance is still in initial health at $(date)" >> "${log}"
+                                        echo "the instance ${i} is still in initial health at $(date)" >> "${log}"
 
-                                sleep 10
+                                        sleep 10
 
 
-                        elif [ "$health" == "unhealthy" ]; then
+                                elif [ "$health" == "unhealthy" ]; then
 
-                                echo "target is still unhealthy after ${i} times checking" >> "${log}"
+                                        echo "Instance ${i} is still unhealthy after ${j} times checking" >> "${log}"
 
-                                sleep 10
-                        fi
+                                        sleep 10
+                                fi
 
-                        sleep 40
+                                sleep 40
 
+                        done
                 done
 
                 echo "Instance is attached to target group now at $(date) " >> "${log}"
